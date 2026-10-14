@@ -1,0 +1,53 @@
+
+
+
+.library-wall {
+    background-image: url("https://images.app.goo.gl/gpExwKdGd1cjqEKC9");
+    /*background-color: #cccccc;*/
+    height: 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
+   }
+
+form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1em;
+    width: 420px;
+   
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 4em;
+
+}
+
+input[type="submit"] {
+    grid-column: 2/3;
+    width: 100px;
+    justify-self: end;
+}
+
+input[type="text"] {
+    width: 200px;
+    border: 1px solid gray;
+}
+
+
+label {
+    justify-self: end;
+}
+
+.message {
+    grid-column: 2/3;
+    color: darkRed;
+    font-weight: bold;
+}
+
+#book-message {
+    width: 300px;
+    margin-left: auto;
+    margin-right:   auto;
+    margin-top: 5em;
+    font-size: 30px;
+}

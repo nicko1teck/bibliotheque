@@ -84,7 +84,9 @@ jobs:
           (cd "$BASE/releases/$REL/server" && npm ci --omit=dev)
 
           # Remember what is live now, then switch to the new release.
-          PREV="$(readlink -f "$BASE/current" 2>/dev/null || true)"
+          # (Only a link that really leads somewhere counts. The very first deploy has none.)
+          PREV=""
+          if [ -e "$BASE/current" ]; then PREV="$(readlink -f "$BASE/current")"; fi
           ln -sfn "$BASE/releases/$REL" "$BASE/current"
           sudo systemctl restart portfolio portfolio-web
 
@@ -108,6 +110,8 @@ jobs:
               ln -sfn "$PREV" "$BASE/current"
               sudo systemctl restart portfolio portfolio-web
               echo "Rolled back to $PREV"
+            else
+              echo "No previous release to roll back to"
             fi
             exit 1
           fi

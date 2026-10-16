@@ -1,0 +1,114 @@
+# Builds the React client and deploys the whole app to EC2 whenever master is pushed.
+# Can also be started by hand from the repo's Actions tab ("Run workflow").
+#
+# Required repository SECRETS (Settings > Secrets and variables > Actions > Secrets):
+#   EC2_HOST     the server's Elastic IP
+#   EC2_USER     the login user on the server (ec2-user)
+#   EC2_SSH_KEY  the PRIVATE half of the dedicated deploy key
+# Required repository VARIABLE (same page, Variables tab):
+#   REACT_APP_SERVER_URL  full address of the backend's books endpoint, for example
+#                         http://YOUR_SERVER_IP:4000/books  (baked into the React build)
+#
+# The database settings are NOT here. They live in /home/ec2-user/bibliotheque.env on the server.
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-bibliotheque
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      # react-scripts 4 builds cleanly on Node 16 (newer Node needs a workaround).
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '16'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Build the React client
+        working-directory: client
+        env:
+          CI: 'false'
+          REACT_APP_SERVER_URL: ${{ vars.REACT_APP_SERVER_URL }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package the release
+        run: |
+          mkdir -p stage/web
+          cp -r server stage/server
+          cp -r client/build stage/web/build
+          tar czf release.tgz -C stage .
+
+      - name: Set up SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload the release
+        run: |
+          scp -i ~/.ssh/deploy_key release.tgz \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/bibliotheque-release.tgz"
+
+      # The server's Node comes from nvm, so log in with a login shell (bash -l).
+      - name: Install the release, restart, and check it is healthy
+        run: |
+          RELEASE="$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+          ssh -i ~/.ssh/deploy_key "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" bash -l -s "$RELEASE" <<'REMOTE'
+          set -euo pipefail
+          REL="$1"
+          BASE="$HOME/bibliotheque"
+
+          mkdir -p "$BASE/releases/$REL"
+          tar xzf /tmp/bibliotheque-release.tgz -C "$BASE/releases/$REL"
+          rm -f /tmp/bibliotheque-release.tgz
+
+          echo "Installing server packages"
+          (cd "$BASE/releases/$REL/server" && npm ci --omit=dev)
+
+          # Remember what is live now, then switch to the new release.
+          PREV="$(readlink -f "$BASE/current" 2>/dev/null || true)"
+          ln -sfn "$BASE/releases/$REL" "$BASE/current"
+          sudo systemctl restart portfolio portfolio-web
+
+          healthy() {
+            for i in $(seq 1 20); do
+              if curl -fs -o /dev/null http://localhost:4000/books && curl -fs -o /dev/null http://localhost:3000/; then
+                return 0
+              fi
+              sleep 3
+            done
+            return 1
+          }
+
+          if healthy; then
+            echo "Healthy: backend answers on 4000 and front end on 3000"
+            # Keep the 5 newest releases.
+            (cd "$BASE/releases" && ls -1dt */ | tail -n +6 | xargs -r rm -rf) || true
+          else
+            echo "Health check FAILED"
+            if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+              ln -sfn "$PREV" "$BASE/current"
+              sudo systemctl restart portfolio portfolio-web
+              echo "Rolled back to $PREV"
+            fi
+            exit 1
+          fi
+          REMOTE
